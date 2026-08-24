@@ -2,6 +2,10 @@
 
 **Parametric flight-delay coverage on GenLayer studionet. No oracle, no insurer.**
 
+- **Live app:** <https://flightrefund-genlayer.vercel.app>
+- **Contract:** [`0x4630f73C3B07F36a479d27369e3229414e6d11eE`](https://genlayer-explorer.vercel.app/address/0x4630f73C3B07F36a479d27369e3229414e6d11eE) on GenLayer studionet
+- **Repo:** <https://github.com/phu1271997/flightrefund>
+
 Buy a policy against a specific flight. When it lands (or is cancelled), file a
 claim. The GenLayer Intelligent Contract fetches
 [flightaware.com](https://www.flightaware.com) and
