@@ -1,7 +1,12 @@
 import { createClient } from 'genlayer-js';
 import { studionet } from 'genlayer-js/chains';
 
-export const CONTRACT_ADDRESS = import.meta.env.VITE_CONTRACT_ADDRESS;
+// Default address is the v2 contract on studionet (premium/coverage split,
+// on-chain purchase + claim windows, per-flight verdict binding).
+// Override at build time with VITE_CONTRACT_ADDRESS for a fresh redeploy.
+const DEFAULT_CONTRACT_ADDRESS = '0x85e2A1a66F6d91138DFc76C12fb7c226AFd03C20';
+export const CONTRACT_ADDRESS =
+  import.meta.env.VITE_CONTRACT_ADDRESS || DEFAULT_CONTRACT_ADDRESS;
 export const CHAIN = studionet;
 export const CHAIN_ID_HEX = '0x' + CHAIN.id.toString(16);
 

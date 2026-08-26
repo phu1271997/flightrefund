@@ -3,7 +3,7 @@
 **Parametric flight-delay coverage on GenLayer studionet. Pooled insurer capital, on-chain time windows, verdicts bound to the exact dated flight.**
 
 - **Live app:** <https://flightrefund-genlayer.vercel.app>
-- **Contract:** deploy fresh from `contracts/flight_refund.py` to GenLayer studionet, then set `VITE_CONTRACT_ADDRESS`.
+- **Contract (v2):** [`0x85e2A1a66F6d91138DFc76C12fb7c226AFd03C20`](https://genlayer-explorer.vercel.app/address/0x85e2A1a66F6d91138DFc76C12fb7c226AFd03C20) on GenLayer studionet
 - **Repo:** <https://github.com/phu1271997/flightrefund>
 
 Buy coverage against a specific dated flight. You pay a small premium; the insurer's pool provides the coverage. After the flight lands (or is cancelled), file a claim. The Intelligent Contract fetches [flightaware.com](https://www.flightaware.com) and [flightradar24.com](https://www.flightradar24.com) directly on-chain, has validator LLMs classify the delay bucket for **that exact dated flight** on each page, and only releases the coverage when both sources agree.
