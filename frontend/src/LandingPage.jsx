@@ -11,25 +11,25 @@ const HOW_STEPS = [
     n: '01',
     title: 'Purchase a policy',
     body:
-      'Pick a flight number, a date, and how long the delay must be before you get paid. Lock the payout amount into the contract as your premium.',
+      'Pick a flight number, a date, and how long the delay must trigger a payout. Pay a small premium (10% of coverage). The pool — funded by the insurer — locks the coverage amount for you. Purchase must happen at least 1 day before the flight.',
   },
   {
     n: '02',
     title: 'Fly your flight',
     body:
-      'The policy sits on-chain until you file a claim. Nothing happens automatically — you decide when to trigger settlement.',
+      'The policy sits on-chain, bound to the exact dated flight. Nothing happens automatically — you decide when to file the claim.',
   },
   {
     n: '03',
     title: 'File your claim',
     body:
-      'The Intelligent Contract fetches flightaware.com AND flightradar24.com directly on-chain and asks two independent validator LLMs to extract the delay bucket from each page.',
+      'Claim opens the day after the flight and stays open for 30 days. The Intelligent Contract fetches flightaware.com AND flightradar24.com directly on-chain and asks two independent validator LLMs to extract the delay bucket for that specific dated flight.',
   },
   {
     n: '04',
     title: 'Settle in seconds',
     body:
-      'Both sources agree and the delay meets your threshold → the payout is released to your wallet. They disagree → the policy is marked UNRESOLVED, funds stay safe.',
+      'Both sources agree on that dated flight and the delay meets your threshold → the pool releases the coverage to your wallet. Sources disagree or the page is not about that dated flight → the policy is marked UNRESOLVED, coverage stays locked, and the insurer can refund your premium.',
   },
 ];
 
@@ -45,11 +45,19 @@ const BUCKETS = [
 const FAQS = [
   {
     q: 'Is this actually insurance?',
-    a: 'Parametric coverage, technically. There is no claims adjuster and no policy underwriting — the payout formula and trigger are both encoded in the contract. What you buy is a right to a specific payout if a specific, publicly verifiable event happens.',
+    a: 'Parametric coverage. The insurer funds a shared pool; the buyer pays a small premium (10% of desired coverage) and receives the coverage from the pool if the delay meets the threshold. Buyer is not funding their own payout.',
   },
   {
-    q: 'What if the tracking sites are wrong?',
-    a: 'If FlightAware and FlightRadar24 return different delay buckets, the contract does NOT pay out. It marks the policy UNRESOLVED and preserves the funds. This is intentional — silent auto-pay on disputed data is what breaks trust in parametric products.',
+    q: 'What if I buy after the flight has already left?',
+    a: 'You cannot. Purchases must happen at least a day before the scheduled flight date, and the contract verifies today\'s UTC date on-chain via consensus before accepting the premium.',
+  },
+  {
+    q: 'What if the tracking site talks about a different date?',
+    a: 'The validator LLM is required to confirm three things — flight_match, date_match, completed — before returning a bucket. If any is false the bucket collapses to UNKNOWN and the payout does NOT release. Silent auto-pay on wrong data is what breaks trust in parametric products.',
+  },
+  {
+    q: 'What if the tracking sites disagree?',
+    a: 'The contract does NOT pay out. It marks the policy UNRESOLVED, keeps the coverage locked, and lets the insurer refund your premium manually. No consumer loses funds to a data-source disagreement.',
   },
   {
     q: 'Why not just call the FlightStats API off-chain?',
@@ -57,7 +65,7 @@ const FAQS = [
   },
   {
     q: 'What GenLayer feature makes this possible?',
-    a: 'gl.nondet.web.render + gl.nondet.exec_prompt inside a gl.vm.run_nondet block. Web reads happen on-chain during consensus; every validator does the same fetch and runs the same LLM, then votes.',
+    a: 'gl.nondet.web.render + gl.nondet.exec_prompt inside a gl.vm.run_nondet block. Web reads happen on-chain during consensus; every validator does the same fetch and runs the same LLM, then votes. A second nondet block fetches the UTC time source used to gate the purchase and claim windows.',
   },
 ];
 
@@ -102,9 +110,12 @@ export default function LandingPage() {
             <em>The chain pays you.</em>
           </h1>
           <p>
-            FlightRefund is parametric coverage that settles itself. No insurance company, no
-            paid oracle, no claim form. When your flight is late, the Intelligent Contract
-            checks two independent flight-tracking sites on-chain — and pays if they agree.
+            FlightRefund is parametric coverage that settles itself. The insurer funds a
+            shared pool; you pay a small premium and receive the coverage from the pool if
+            the delay meets your threshold. No insurance company, no paid oracle, no claim
+            form. When your flight is late, the Intelligent Contract checks two independent
+            flight-tracking sites on-chain — bound to your exact dated flight — and pays if
+            they agree.
           </p>
           <div className="lp-hero__cta">
             <Link to="/app" className="lp-btn lp-btn--primary">
@@ -165,7 +176,7 @@ export default function LandingPage() {
             </div>
             <div className="pass__stub">
               <div className="pass__stub-field">
-                <span>Payout on delay ≥ 60 min</span>
+                <span>Coverage from pool · premium 0.05 GEN</span>
                 <strong>0.50 GEN</strong>
               </div>
               <div className="pass__barcode">||| |||| ||| ||||| ||| |||| ||</div>

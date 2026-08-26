@@ -9,13 +9,27 @@ import {
   CHAIN,
 } from './client.js';
 
+const WEI = 10n ** 18n;
+const PREMIUM_RATE_BPS = 1000n; // 10% — mirrors contract constant
+
 function formatGen(wei) {
-  if (!wei) return '0';
-  const big = BigInt(wei);
-  const whole = big / 10n ** 18n;
-  const frac = big % 10n ** 18n;
+  if (wei === undefined || wei === null) return '0';
+  let big;
+  try {
+    big = BigInt(wei);
+  } catch {
+    return '0';
+  }
+  const whole = big / WEI;
+  const frac = big % WEI;
   if (frac === 0n) return whole.toString();
   return `${whole}.${frac.toString().padStart(18, '0').slice(0, 4)}`;
+}
+
+function toWei(gen) {
+  const val = parseFloat(gen);
+  if (!(val > 0)) return 0n;
+  return BigInt(Math.floor(val * 1e18));
 }
 
 function short(addr) {
@@ -36,9 +50,12 @@ export default function AppView() {
   const [flight, setFlight] = useState('');
   const [flightDate, setFlightDate] = useState('');
   const [threshold, setThreshold] = useState('MODERATE');
-  const [payoutGen, setPayoutGen] = useState('0.1');
+  const [coverageGen, setCoverageGen] = useState('0.5');
   const [claimId, setClaimId] = useState('');
   const [policies, setPolicies] = useState([]);
+  const [pool, setPool] = useState({ balance: 0n, locked: 0n, available: 0n });
+  const [ownerAddr, setOwnerAddr] = useState('');
+  const [fundGen, setFundGen] = useState('1');
   const [busy, setBusy] = useState('');
   const [error, setError] = useState('');
   const [lastTxHash, setLastTxHash] = useState('');
@@ -48,18 +65,60 @@ export default function AppView() {
     () => (account ? buildWriteClient(account) : null),
     [account],
   );
-  const configured = CONTRACT_ADDRESS && CONTRACT_ADDRESS !== '0x0000000000000000000000000000000000000000';
+  const configured =
+    CONTRACT_ADDRESS && CONTRACT_ADDRESS !== '0x0000000000000000000000000000000000000000';
+
+  const coverageWei = useMemo(() => toWei(coverageGen), [coverageGen]);
+  const premiumWei = useMemo(
+    () => (coverageWei * PREMIUM_RATE_BPS + 9999n) / 10000n,
+    [coverageWei],
+  );
+  const isOwner =
+    account && ownerAddr && account.toLowerCase() === ownerAddr.toLowerCase();
 
   const refresh = useCallback(async () => {
     if (!configured) return;
     try {
-      const raw = await readClient.readContract({
-        address: CONTRACT_ADDRESS,
-        functionName: 'list_policies',
-        args: [0n, 50n],
-      });
-      const parsed = JSON.parse(raw || '{"items": []}');
+      const [rawList, poolBal, locked, available, cfg] = await Promise.all([
+        readClient.readContract({
+          address: CONTRACT_ADDRESS,
+          functionName: 'list_policies',
+          args: [0n, 50n],
+        }),
+        readClient.readContract({
+          address: CONTRACT_ADDRESS,
+          functionName: 'get_pool_balance',
+          args: [],
+        }),
+        readClient.readContract({
+          address: CONTRACT_ADDRESS,
+          functionName: 'get_locked_coverage',
+          args: [],
+        }),
+        readClient.readContract({
+          address: CONTRACT_ADDRESS,
+          functionName: 'get_available_pool',
+          args: [],
+        }),
+        readClient.readContract({
+          address: CONTRACT_ADDRESS,
+          functionName: 'get_config',
+          args: [],
+        }),
+      ]);
+      const parsed = JSON.parse(rawList || '{"items": []}');
       setPolicies((parsed.items || []).slice().reverse());
+      setPool({
+        balance: BigInt(poolBal || 0),
+        locked: BigInt(locked || 0),
+        available: BigInt(available || 0),
+      });
+      try {
+        const conf = JSON.parse(cfg || '{}');
+        if (conf.owner) setOwnerAddr(conf.owner);
+      } catch {
+        /* ignore */
+      }
     } catch (err) {
       console.error(err);
     }
@@ -105,7 +164,11 @@ export default function AppView() {
       if (hash) {
         setLastTxHash(hash);
         try {
-          await writeClient.waitForTransactionReceipt({ hash, retries: 150, interval: 3000 });
+          await writeClient.waitForTransactionReceipt({
+            hash,
+            retries: 150,
+            interval: 3000,
+          });
         } catch (waitErr) {
           console.warn('waitForTransactionReceipt fell short — polling refresh anyway', waitErr);
         }
@@ -119,14 +182,16 @@ export default function AppView() {
     }
   };
 
-  const doBuy = () => withTx('Buying policy…', async () => {
-    const value = BigInt(Math.floor(parseFloat(payoutGen) * 1e18));
-    if (value <= 0n) throw new Error('Payout must be > 0');
+  const doBuy = () => withTx('Purchasing coverage (checking purchase window on-chain)…', async () => {
+    if (coverageWei <= 0n) throw new Error('Coverage must be > 0');
+    if (coverageWei > pool.available) {
+      throw new Error('Requested coverage exceeds the pool\'s available capacity');
+    }
     const hash = await writeClient.writeContract({
       address: CONTRACT_ADDRESS,
       functionName: 'buy_policy',
-      args: [flight.trim().toUpperCase(), flightDate, threshold],
-      value,
+      args: [flight.trim().toUpperCase(), flightDate, threshold, coverageWei.toString()],
+      value: premiumWei,
     });
     setFlight('');
     setFlightDate('');
@@ -134,7 +199,7 @@ export default function AppView() {
   });
 
   const doClaim = () => withTx(
-    'Running validator consensus (fetching FlightAware + FlightRadar24, LLM voting)…',
+    'Running validator consensus (checking claim window, fetching FlightAware + FlightRadar24, LLM voting)…',
     async () => {
       const hash = await writeClient.writeContract({
         address: CONTRACT_ADDRESS,
@@ -146,6 +211,18 @@ export default function AppView() {
       return hash;
     },
   );
+
+  const doFundPool = () => withTx('Funding pool…', async () => {
+    const wei = toWei(fundGen);
+    if (wei <= 0n) throw new Error('Fund amount must be > 0');
+    const hash = await writeClient.writeContract({
+      address: CONTRACT_ADDRESS,
+      functionName: 'fund_pool',
+      args: [],
+      value: wei,
+    });
+    return hash;
+  });
 
   return (
     <main>
@@ -160,15 +237,22 @@ export default function AppView() {
       </nav>
       <h1>Coverage Terminal</h1>
       <p className="tag">
-        Buy a policy against a specific flight. When it lands, file a claim. Both flight
-        tracking sites must agree on the delay bucket for the payout to release.
+        The insurer funds the pool; the buyer pays a small premium and receives
+        coverage from the pool if the delay meets the threshold. Purchase and
+        claim windows and per-flight verdict binding are all enforced on-chain.
       </p>
 
       <div className="card">
         <div className="row">
           {account ? (
             <span>
-              Connected: <code>{short(account)}</code> · chain <code>{CHAIN.name}</code>
+              Connected: <code>{short(account)}</code>
+              {isOwner && (
+                <span className="pill" style={{ marginLeft: 8, background: '#dcfce7', color: '#166534' }}>
+                  pool owner
+                </span>
+              )}
+              {' · chain '}<code>{CHAIN.name}</code>
             </span>
           ) : (
             <button onClick={doConnect}>Connect MetaMask</button>
@@ -196,7 +280,42 @@ export default function AppView() {
       </div>
 
       <div className="card">
-        <h3>1 · Buy policy</h3>
+        <h3>Coverage pool</h3>
+        <div className="row" style={{ gap: 20, flexWrap: 'wrap' }}>
+          <span>Pool balance: <strong>{formatGen(pool.balance)} GEN</strong></span>
+          <span>Locked: <strong>{formatGen(pool.locked)} GEN</strong></span>
+          <span>Available: <strong>{formatGen(pool.available)} GEN</strong></span>
+          {ownerAddr && (
+            <span style={{ marginLeft: 'auto', color: 'var(--muted)', fontSize: 13 }}>
+              Insurer: <code>{short(ownerAddr)}</code>
+            </span>
+          )}
+        </div>
+        {isOwner && (
+          <div className="row" style={{ marginTop: 12, gap: 10 }}>
+            <input
+              type="number"
+              min="0"
+              step="0.01"
+              value={fundGen}
+              onChange={(e) => setFundGen(e.target.value)}
+              placeholder="GEN to add"
+              style={{ maxWidth: 160 }}
+            />
+            <button disabled={!!busy} onClick={doFundPool}>
+              Fund pool
+            </button>
+          </div>
+        )}
+        {!isOwner && account && (
+          <p style={{ color: 'var(--muted)', fontSize: 13, marginTop: 8 }}>
+            Only the pool owner can top up capital. Buyers pay only the premium.
+          </p>
+        )}
+      </div>
+
+      <div className="card">
+        <h3>1 · Buy coverage</h3>
         <div className="grid-2">
           <div>
             <label>Flight number</label>
@@ -213,26 +332,34 @@ export default function AppView() {
             <option key={t.value} value={t.value}>{t.label}</option>
           ))}
         </select>
-        <label>Payout amount (GEN)</label>
+        <label>Coverage you want if the flight is delayed (GEN)</label>
         <input
           type="number"
           min="0"
           step="0.01"
-          value={payoutGen}
-          onChange={(e) => setPayoutGen(e.target.value)}
+          value={coverageGen}
+          onChange={(e) => setCoverageGen(e.target.value)}
         />
-        <button disabled={!account || !flight || !flightDate || !!busy} onClick={doBuy}>
-          Lock premium &amp; buy
+        <p style={{ color: 'var(--muted)', fontSize: 13, margin: '6px 0 0' }}>
+          Premium you pay now (locked in pool): <strong>{formatGen(premiumWei)} GEN</strong> · Coverage
+          the pool locks for you: <strong>{formatGen(coverageWei)} GEN</strong>. Must be purchased at
+          least 1 day before the flight.
+        </p>
+        <button
+          disabled={!account || !flight || !flightDate || !!busy}
+          onClick={doBuy}
+        >
+          Pay premium &amp; lock coverage
         </button>
       </div>
 
       <div className="card">
         <h3>2 · File a claim</h3>
         <p style={{ color: 'var(--muted)', fontSize: 13, marginTop: 0 }}>
-          Once the flight has landed (or been cancelled), file a claim by policy ID. The
-          contract fetches both flight-tracking sites, extracts the delay bucket via LLM on
-          each source, and only pays if the two sites agree. This takes 30–120 seconds
-          because validators do real inference before consensus finalizes.
+          Claims open the day after the flight date and stay open for 30 days.
+          The contract fetches both flight-tracking sites, extracts the delay
+          bucket via LLM on each, and only pays out when both sources agree on
+          the exact dated flight. Consensus takes 30–120 seconds.
         </p>
         <label>Policy ID</label>
         <input value={claimId} onChange={(e) => setClaimId(e.target.value)} placeholder="1" />
@@ -258,7 +385,7 @@ export default function AppView() {
                 </span>
               )}
               <span style={{ marginLeft: 'auto', color: 'var(--muted)' }}>
-                {formatGen(p.payout)} GEN payout
+                {formatGen(p.coverage)} GEN coverage · premium {formatGen(p.premium)} GEN
               </span>
             </div>
             <div className="meta">
@@ -266,6 +393,9 @@ export default function AppView() {
               threshold {p.threshold}
             </div>
             <div className="meta">buyer: {short(p.buyer)}</div>
+            {p.purchased_on && (
+              <div className="meta">purchased on: {p.purchased_on}{p.claimed_on ? ` · claimed on: ${p.claimed_on}` : ''}</div>
+            )}
             {p.sources && Object.keys(p.sources).length > 0 && (
               <div className="meta">
                 sources:{' '}
